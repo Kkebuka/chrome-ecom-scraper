@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ScrapedRow, FieldMapping } from '../../shared/types'
+import { formatNaira } from '../../shared/calculator'
 
 interface Props {
   rows: ScrapedRow[]
@@ -20,7 +21,9 @@ export function DataTable({ rows, fields }: Props) {
     )
   }
 
-  const columns = fields.map(f => f.label)
+  const rawColumns = fields.map(f => f.label)
+  const columns = Array.from(new Set(rawColumns))
+
   const displayRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
   const totalPages = Math.ceil(Math.min(rows.length, MAX_PREVIEW) / PAGE_SIZE)
 
@@ -47,6 +50,8 @@ export function DataTable({ rows, fields }: Props) {
                 {columns.map(col => {
                   const val = row[col]
                   const isUrl = typeof val === 'string' && val.startsWith('http')
+                  const isNairaCol = /Naira|Carton Cost|Cost per Piece/i.test(col)
+
                   return (
                     <td key={col} className="py-1 px-3 text-xs" style={{ maxWidth: '120px' }}>
                       {isUrl ? (
@@ -60,6 +65,10 @@ export function DataTable({ rows, fields }: Props) {
                         >
                           {val.length > 30 ? `${val.slice(0, 28)}…` : val}
                         </a>
+                      ) : isNairaCol ? (
+                        <span className="font-semibold" style={{ color: 'var(--brand)' }}>
+                          {typeof val === 'number' ? formatNaira(val) : String(val ?? '—')}
+                        </span>
                       ) : (
                         <span title={String(val ?? '')}>
                           {val === null || val === undefined ? (

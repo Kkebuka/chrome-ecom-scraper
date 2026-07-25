@@ -19,7 +19,30 @@ export type FieldType =
   | 'sku'
   | 'description'
   | 'url'
+  | 'cbm'
+  | 'pcs'
   | 'custom'
+
+// ─── Landed Cost Calculation ───────────────────────────────────────────────────
+export interface LandedCostConfig {
+  containerCBM: number        // Default: 66.65 CBM
+  clearingNGN: number         // Default: 17,500,000 NGN
+  freightUSD: number          // Default: $5,000 USD
+  dollarRate: number          // Default: 1,500 NGN/USD
+  isUnitPrice?: boolean       // True if scraped price is price-per-piece (default: true)
+  defaultCBM?: number         // Fallback CBM if missing (e.g. 0.1)
+  defaultQtyPerCarton?: number// Fallback Qty if missing (e.g. 1)
+}
+
+export interface LandedCostResult {
+  goodsValueNGN: number
+  freightNGN: number
+  clearingPerCarton: number
+  totalCartonCostNGN: number
+  costPerPieceNGN: number     // Naira price per piece
+  formattedCostPerPiece: string
+  formattedTotalCartonCost: string
+}
 
 export type AttributeType =
   | 'text'

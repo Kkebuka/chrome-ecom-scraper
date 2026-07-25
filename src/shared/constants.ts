@@ -93,6 +93,18 @@ export const STORAGE_KEYS = {
   templates: (domain: string) => `template_${domain}`,
   session: 'current_session',
   settings: 'user_settings',
+  landedCostConfig: 'landed_cost_config',
+} as const
+
+// ─── Landed Cost Defaults ─────────────────────────────────────────────────────
+export const DEFAULT_LANDED_COST_CONFIG = {
+  containerCBM: 66.65,
+  clearingNGN: 17500000,
+  freightUSD: 5000,
+  dollarRate: 1500,
+  isUnitPrice: true,
+  defaultCBM: 0.1,
+  defaultQtyPerCarton: 1,
 } as const
 
 // ─── Extension ────────────────────────────────────────────────────────────────
@@ -102,3 +114,4 @@ export const HIGHLIGHT_OVERLAY_ID = '__ecomscraper_overlay__'
 export const HIGHLIGHT_COLOR_HOVER = 'rgba(34, 197, 94, 0.3)'     // brand green, 30% opacity
 export const HIGHLIGHT_COLOR_SELECTED = 'rgba(34, 197, 94, 0.15)' // brand green, 15% opacity
 export const HIGHLIGHT_BORDER_COLOR = '#16a34a'
+

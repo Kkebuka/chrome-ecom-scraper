@@ -16,7 +16,7 @@ export const MKTOYS_TEMPLATE: SiteTemplate = {
   id: 'mktoys-v1',
   name: 'MK Toys — Product Listing',
   domain: 'mktoys.com',
-  listSelector: ".inner-container, a[href^='/ProductInfo/']",
+  listSelector: ".inner-container",
   fields: [
     {
       id: 'mktoys-name',
@@ -63,6 +63,22 @@ export const MKTOYS_TEMPLATE: SiteTemplate = {
       label: 'Category',
       type: 'category',
       cssSelector: '[class*="tag"], [class*="category"], [class*="cat"]',
+      attribute: 'text',
+      transform: 'trim',
+    },
+    {
+      id: 'mktoys-cbm',
+      label: 'CBM',
+      type: 'cbm',
+      cssSelector: '.outer-information, [class*="cbm"], [class*="CBM"]',
+      attribute: 'text',
+      transform: 'trim',
+    },
+    {
+      id: 'mktoys-pcs',
+      label: 'Outer Packing',
+      type: 'pcs',
+      cssSelector: '.outer-information, [class*="packing"], [class*="outer"]',
       attribute: 'text',
       transform: 'trim',
     },
