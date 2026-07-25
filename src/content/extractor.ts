@@ -113,13 +113,58 @@ export class Extractor {
       }
     }
 
+    // Clean up CBM if it contains product title text instead of CBM number
+    if (row['CBM'] && typeof row['CBM'] === 'string') {
+      const cbmMatch = (row['CBM'] as string).match(/CBM(?:\(m³\))?[:\s]+([\d.]+)/i) || (row['CBM'] as string).match(/\b0\.\d+\b/)
+      if (cbmMatch?.[1] || cbmMatch?.[0]) {
+        row['CBM'] = cbmMatch[1] || cbmMatch[0]
+      } else {
+        delete row['CBM']
+      }
+    }
+
+    // Clean up Outer Packing if it contains product title text instead of PCS number
+    if (row['Outer Packing'] && typeof row['Outer Packing'] === 'string') {
+      const pcsMatch = (row['Outer Packing'] as string).match(/(?:Outer\s*Packing|Packing|Pcs\/Carton|PCS|Qty)[:\s]+(\d+)/i)
+      if (pcsMatch?.[1]) {
+        row['Outer Packing'] = pcsMatch[1]
+      } else if (!/MKB|\b[A-Z]{2,}\d+/i.test(row['Outer Packing'] as string) && /^\d+$/.test((row['Outer Packing'] as string).trim())) {
+        row['Outer Packing'] = (row['Outer Packing'] as string).trim()
+      } else {
+        delete row['Outer Packing']
+      }
+    }
+
+    // Fallback: search full container text if CBM or Outer Packing fields were not mapped or extracted
+    const fullText = cleanText(container.textContent ?? '')
+    if (!row['CBM']) {
+      const cbmMatch = fullText.match(/CBM(?:\(m³\))?[:\s]+([\d.]+)/i)
+      if (cbmMatch?.[1]) row['CBM'] = cbmMatch[1]
+    }
+    if (!row['Outer Packing']) {
+      const pcsMatch = fullText.match(/(?:Outer\s*Packing|Packing|Pcs\/Carton|PCS|Qty)[:\s]+(\d+)/i)
+      if (pcsMatch?.[1]) row['Outer Packing'] = pcsMatch[1]
+    }
+
     return row
   }
 
   // ── Batch Extraction ──────────────────────────────────────────────────────
   extractAllRows(listSelector: string, fields: FieldMapping[]): ScrapedRow[] {
-    const containers = Array.from(document.querySelectorAll(listSelector))
-    return containers.map(c => this.extractRow(c, fields))
+    const rawContainers = Array.from(document.querySelectorAll(listSelector))
+    // Filter out containers that are nested inside another matched container
+    const containers = rawContainers.filter(c => !rawContainers.some(parent => parent !== c && parent.contains(c)))
+
+    const extractedRows = containers.map(c => this.extractRow(c, fields))
+
+    // Deduplicate extracted rows by Product URL, SKU, or Product Name
+    const seen = new Set<string>()
+    return extractedRows.filter(row => {
+      const key = String(row['Product URL'] || row['SKU / Item Code'] || row['Product Name'] || JSON.stringify(row))
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
   }
 
   // ── Field Value Extraction ────────────────────────────────────────────────

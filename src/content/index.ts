@@ -86,18 +86,51 @@ messenger.onMessage((message: ExtensionMessage, sendResponse: (r: unknown) => vo
     // This keeps file size small and handles webp/avif formats transparently.
     case 'FETCH_IMAGE_BASE64': {
       const { url, thumbSize = 120 } = message.payload as { url: string; thumbSize?: number }
+
+      // 1. Try finding an existing loaded <img> on the page to draw directly to canvas
+      const domImg = Array.from(document.querySelectorAll('img')).find(img => {
+        const src = img.src || img.getAttribute('src') || img.getAttribute('data-src') || ''
+        return src === url || (src.length > 5 && (url.includes(src) || src.includes(url)))
+      })
+
+      if (domImg && domImg.complete && domImg.naturalWidth > 0) {
+        try {
+          const srcW = domImg.naturalWidth || thumbSize
+          const srcH = domImg.naturalHeight || thumbSize
+          const scale = Math.min(thumbSize / srcW, thumbSize / srcH, 1)
+          const dstW = Math.max(1, Math.round(srcW * scale))
+          const dstH = Math.max(1, Math.round(srcH * scale))
+
+          const canvas = document.createElement('canvas')
+          canvas.width = dstW
+          canvas.height = dstH
+          const ctx = canvas.getContext('2d')
+          if (ctx) {
+            ctx.drawImage(domImg, 0, 0, dstW, dstH)
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
+            const base64 = dataUrl.split(',')[1]
+            if (base64) {
+              sendResponse({ type: 'IMAGE_BASE64_RESULT', payload: { base64, mimeType: 'image/jpeg', width: dstW, height: dstH } })
+              return true
+            }
+          }
+        } catch {
+          // If canvas was tainted by cross-origin img element, fall back to fetch below
+        }
+      }
+
+      // 2. Fall back to fetch(url)
       fetch(url)
         .then(resp => resp.blob())
         .then(blob => {
           const imgEl = new Image()
           const blobUrl = URL.createObjectURL(blob)
           imgEl.onload = () => {
-            // Compute thumbnail dimensions preserving aspect ratio
             const srcW = imgEl.naturalWidth || thumbSize
             const srcH = imgEl.naturalHeight || thumbSize
-            const scale = Math.min(thumbSize / srcW, thumbSize / srcH, 1) // never upscale
-            const dstW = Math.round(srcW * scale)
-            const dstH = Math.round(srcH * scale)
+            const scale = Math.min(thumbSize / srcW, thumbSize / srcH, 1)
+            const dstW = Math.max(1, Math.round(srcW * scale))
+            const dstH = Math.max(1, Math.round(srcH * scale))
 
             const canvas = document.createElement('canvas')
             canvas.width = dstW
@@ -109,7 +142,6 @@ messenger.onMessage((message: ExtensionMessage, sendResponse: (r: unknown) => vo
             }
             ctx.drawImage(imgEl, 0, 0, dstW, dstH)
             URL.revokeObjectURL(blobUrl)
-            // Quality 0.88 — sharp and detailed at 160px thumbnail size
             const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
             const base64 = dataUrl.split(',')[1]
             sendResponse({ type: 'IMAGE_BASE64_RESULT', payload: { base64, mimeType: 'image/jpeg', width: dstW, height: dstH } })
