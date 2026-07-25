@@ -7,8 +7,8 @@ import type {
   ScraperMode,
   ExtensionMessage,
 } from '../../shared/types'
-import { DEFAULT_DELAY_MS } from '../../shared/constants'
-import { delay, getDomain, generateId } from '../../shared/utils'
+import { DEFAULT_DELAY_MS, DEFAULT_LANDED_COST_CONFIG, STORAGE_KEYS } from '../../shared/constants'
+import { delay, getDomain, generateId, storageGet } from '../../shared/utils'
 
 /**
  * useScraper — core hook managing the full scrape session lifecycle.
@@ -48,8 +48,8 @@ export function useScraper() {
     if (!tab?.id) return null
     try {
       return await chrome.tabs.sendMessage(tab.id, { type, payload }) as T
-    } catch (e) {
-      console.warn('[useScraper] sendToTab error:', e)
+    } catch {
+      // Tab has no active content script (e.g. extension was reloaded and tab needs refresh)
       return null
     }
   }, [getActiveTab])
@@ -143,7 +143,7 @@ export function useScraper() {
     setRows([])
     setError(null)
 
-    const allRows: ScrapedRow[] = []
+    let allRows: ScrapedRow[] = []
     let page = 1
 
     const newSession: ScrapeSession = {
@@ -175,8 +175,32 @@ export function useScraper() {
           fields,
         })
 
-        const pageRows = resp?.payload?.rows ?? []
-        allRows.push(...pageRows)
+        const rawRows = resp?.payload?.rows ?? []
+        
+        // Load saved landed cost config to compute Naira price per row
+        const savedConfig = await storageGet<import('../../shared/types').LandedCostConfig>(STORAGE_KEYS.landedCostConfig)
+        const landedConfig = savedConfig ?? DEFAULT_LANDED_COST_CONFIG
+        const { calculateRowLandedCost } = await import('../../shared/calculator')
+
+        const pageRows: ScrapedRow[] = rawRows.map(row => {
+          const landedResult = calculateRowLandedCost(row, landedConfig)
+          return {
+            ...row,
+            'Total Carton Cost (NGN)': landedResult.totalCartonCostNGN,
+            'Cost per Piece (NGN)': landedResult.costPerPieceNGN,
+            'Naira price': landedResult.costPerPieceNGN,
+          }
+        })
+
+        // Deduplicate all accumulated rows by Product URL, SKU, or Name
+        const uniqueRowsMap = new Map<string, ScrapedRow>()
+        for (const r of [...allRows, ...pageRows]) {
+          const key = String(r['Product URL'] ?? r['SKU / Item Code'] ?? r['Product Name'] ?? JSON.stringify(r))
+          if (!uniqueRowsMap.has(key)) {
+            uniqueRowsMap.set(key, r)
+          }
+        }
+        allRows = Array.from(uniqueRowsMap.values())
         setRows([...allRows])
         setSession(prev => prev ? { ...prev, pagesScraped: page, rows: allRows } : prev)
 

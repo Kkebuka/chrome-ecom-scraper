@@ -1,6 +1,10 @@
-import { useState } from 'react'
-import type { ScrapedRow, FieldMapping } from '../../shared/types'
+import { useState, useEffect } from 'react'
+import type { ScrapedRow, FieldMapping, LandedCostConfig } from '../../shared/types'
+import { DEFAULT_LANDED_COST_CONFIG, STORAGE_KEYS } from '../../shared/constants'
+import { storageGet, storageSet } from '../../shared/utils'
+import { calculateRowLandedCost } from '../../shared/calculator'
 import { useExport } from '../hooks/useExport'
+import { LandedCostConfigPanel } from './LandedCostConfigPanel'
 
 interface Props {
   rows: ScrapedRow[]
@@ -15,9 +19,26 @@ export function ExportPanel({ rows, fields, defaultFilename = 'ecomscraper-expor
   const [filename, setFilename] = useState(defaultFilename)
   const [includeImages, setIncludeImages] = useState(true)
   const [embedImages, setEmbedImages] = useState(true)
+  const [includeNairaPrice, setIncludeNairaPrice] = useState(true)
+  const [showCalculatorConfig, setShowCalculatorConfig] = useState(false)
+  const [landedCostConfig, setLandedCostConfig] = useState<LandedCostConfig>({ ...DEFAULT_LANDED_COST_CONFIG })
   const [downloadImagesToggle, setDownloadImagesToggle] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
   const [downloadCount, setDownloadCount] = useState<number | null>(null)
+
+  // Load saved landed cost config on mount
+  useEffect(() => {
+    storageGet<LandedCostConfig>(STORAGE_KEYS.landedCostConfig).then(saved => {
+      if (saved) {
+        setLandedCostConfig({ ...DEFAULT_LANDED_COST_CONFIG, ...saved })
+      }
+    })
+  }, [])
+
+  const handleConfigChange = (updated: LandedCostConfig) => {
+    setLandedCostConfig(updated)
+    storageSet(STORAGE_KEYS.landedCostConfig, updated)
+  }
 
   const imageField = fields.find(f => f.type === 'image')
   const nameField = fields.find(f => f.type === 'name')
@@ -26,20 +47,37 @@ export function ExportPanel({ rows, fields, defaultFilename = 'ecomscraper-expor
     setIsExporting(true)
     setDownloadCount(null)
 
-    const columns = fields
+    // Prepare rows with calculated Naira landed cost columns if toggled
+    const exportRows = rows.map(row => {
+      const enriched = { ...row }
+      if (includeNairaPrice) {
+        const res = calculateRowLandedCost(row, landedCostConfig)
+        enriched['Total Carton Cost (NGN)'] = res.totalCartonCostNGN
+        enriched['Naira Price (Per Piece)'] = res.costPerPieceNGN
+      }
+      return enriched
+    })
+
+    const baseColumns = fields
       .filter(f => f.type !== 'image' || includeImages)
       .map(f => f.label)
+      .filter(col => col !== 'Naira price' && col !== 'Cost per Piece (NGN)' && col !== 'Total Carton Cost (NGN)')
+
+    let columns = baseColumns
+    if (includeNairaPrice) {
+      columns = [...columns, 'Total Carton Cost (NGN)', 'Naira Price (Per Piece)']
+    }
 
     try {
       if (format === 'csv') {
-        exportCSV(rows, fields, { filename, columns })
+        exportCSV(exportRows, fields, { filename, columns })
       } else {
-        await exportXLSX(rows, fields, { filename, columns, embedImagesInXlsx: embedImages && !!imageField })
+        await exportXLSX(exportRows, fields, { filename, columns, embedImagesInXlsx: embedImages && !!imageField })
       }
 
       if (downloadImagesToggle && imageField) {
         const count = await downloadImages(
-          rows,
+          exportRows,
           imageField.label,
           nameField?.label ?? 'Product Name'
         )
@@ -92,6 +130,46 @@ export function ExportPanel({ rows, fields, defaultFilename = 'ecomscraper-expor
           onChange={e => setFilename(e.target.value)}
           placeholder="ecomscraper-export"
         />
+      </div>
+
+      {/* Naira Price (Landed Cost) Option */}
+      <div className="space-y-2 p-3 rounded-lg" style={{ background: 'var(--panel-bg)', border: '1px solid var(--panel-border)' }}>
+        <div className="flex items-center justify-between">
+          <p className="section-title mb-0">Naira Price Calculation</p>
+          <button
+            type="button"
+            className="text-xs underline cursor-pointer"
+            style={{ color: 'var(--brand)' }}
+            onClick={() => setShowCalculatorConfig(!showCalculatorConfig)}
+          >
+            {showCalculatorConfig ? 'Hide Settings ▲' : 'Edit Exchange & Fees ▼'}
+          </button>
+        </div>
+
+        <label className="flex items-center gap-3 cursor-pointer">
+          <div className="toggle">
+            <input
+              id="toggle-include-naira-price"
+              type="checkbox"
+              checked={includeNairaPrice}
+              onChange={e => setIncludeNairaPrice(e.target.checked)}
+            />
+            <div className="toggle-track" />
+            <div className="toggle-thumb" />
+          </div>
+          <div>
+            <p className="text-xs font-medium" style={{ color: 'var(--panel-text)' }}>Include "Naira price" column</p>
+            <p className="text-xs" style={{ color: 'var(--panel-text-muted)' }}>
+              Landed cost per piece (Rate: ₦{landedCostConfig.dollarRate.toLocaleString()}/$, Freight: ${landedCostConfig.freightUSD.toLocaleString()})
+            </p>
+          </div>
+        </label>
+
+        {showCalculatorConfig && (
+          <div className="mt-3">
+            <LandedCostConfigPanel config={landedCostConfig} onChange={handleConfigChange} />
+          </div>
+        )}
       </div>
 
       {/* Image Options */}
@@ -160,7 +238,7 @@ export function ExportPanel({ rows, fields, defaultFilename = 'ecomscraper-expor
           ✅ {rows.length.toLocaleString()} products ready to export
         </p>
         <p className="text-xs mt-0.5" style={{ color: 'var(--panel-text-muted)' }}>
-          {fields.length} columns · {format.toUpperCase()} format
+          {fields.length + (includeNairaPrice ? 1 : 0)} columns · {format.toUpperCase()} format
         </p>
       </div>
 
@@ -186,3 +264,4 @@ export function ExportPanel({ rows, fields, defaultFilename = 'ecomscraper-expor
     </div>
   )
 }
+

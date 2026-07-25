@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { FieldMapping, FieldType } from '../../shared/types'
 import { generateId } from '../../shared/utils'
 
-const FIELD_TYPES: FieldType[] = ['name', 'price', 'image', 'category', 'sku', 'description', 'url', 'custom']
+const FIELD_TYPES: FieldType[] = ['name', 'price', 'image', 'category', 'sku', 'description', 'url', 'cbm', 'pcs', 'custom']
 
 const TYPE_COLORS: Record<FieldType, string> = {
   name:        'badge-green',
@@ -12,6 +12,8 @@ const TYPE_COLORS: Record<FieldType, string> = {
   sku:         'badge-blue',
   description: 'badge-blue',
   url:         'badge-blue',
+  cbm:         'badge-amber',
+  pcs:         'badge-amber',
   custom:      'badge-blue',
 }
 
