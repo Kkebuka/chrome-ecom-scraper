@@ -135,8 +135,8 @@ export class Extractor {
       }
     }
 
-    // Fallback: search full container text if CBM or Outer Packing fields were not mapped or extracted
-    const fullText = cleanText(container.textContent ?? '')
+    // Fallback 1: search full container text if CBM or Outer Packing fields were not mapped or extracted
+    let fullText = cleanText(container.textContent ?? '')
     if (!row['CBM']) {
       const cbmMatch = fullText.match(/CBM(?:\(m³\))?[:\s]+([\d.]+)/i)
       if (cbmMatch?.[1]) row['CBM'] = cbmMatch[1]
@@ -144,6 +144,41 @@ export class Extractor {
     if (!row['Outer Packing']) {
       const pcsMatch = fullText.match(/(?:Outer\s*Packing|Packing|Pcs\/Carton|PCS|Qty)[:\s]+(\d+)/i)
       if (pcsMatch?.[1]) row['Outer Packing'] = pcsMatch[1]
+    }
+
+    // Trigger hover mouse events if CBM or Outer Packing are still missing to reveal mktoys popovers
+    if (!row['CBM'] || !row['Outer Packing']) {
+      try {
+        container.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }))
+        container.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }))
+        fullText = cleanText(container.textContent ?? '')
+        if (!row['CBM']) {
+          const cbmMatch = fullText.match(/CBM(?:\(m³\))?[:\s]+([\d.]+)/i)
+          if (cbmMatch?.[1]) row['CBM'] = cbmMatch[1]
+        }
+        if (!row['Outer Packing']) {
+          const pcsMatch = fullText.match(/(?:Outer\s*Packing|Packing|Pcs\/Carton|PCS|Qty)[:\s]+(\d+)/i)
+          if (pcsMatch?.[1]) row['Outer Packing'] = pcsMatch[1]
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Fallback 2: search page popovers / tooltips if CBM or Outer Packing are still missing
+    if (!row['CBM'] || !row['Outer Packing']) {
+      const popovers = Array.from(document.querySelectorAll('.el-popper, .el-popover, .popover, [role="tooltip"]'))
+      for (const pop of popovers) {
+        const popText = cleanText(pop.textContent ?? '')
+        if (!row['CBM']) {
+          const cbmMatch = popText.match(/CBM(?:\(m³\))?[:\s]+([\d.]+)/i)
+          if (cbmMatch?.[1]) row['CBM'] = cbmMatch[1]
+        }
+        if (!row['Outer Packing']) {
+          const pcsMatch = popText.match(/(?:Outer\s*Packing|Packing|Pcs\/Carton|PCS|Qty)[:\s]+(\d+)/i)
+          if (pcsMatch?.[1]) row['Outer Packing'] = pcsMatch[1]
+        }
+      }
     }
 
     return row
