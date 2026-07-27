@@ -3,16 +3,21 @@ import ExcelJS from 'exceljs'
 import type { ScrapedRow, FieldMapping, ExportOptions } from '../../shared/types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const THUMB_PX = 160       // thumbnail pixel size (width & height cap)
-const CELL_HEIGHT_PT = 120 // Excel row height in points (1pt ≈ 1.33px → 120pt ≈ 160px)
-const CELL_WIDTH_CH = 22   // Excel column width in characters (1ch ≈ 7px → 22ch ≈ 154px)
-const BATCH_SIZE = 8       // images fetched in parallel per batch
+const THUMB_PX = 120       // thumbnail pixel size (reduced from 160 for faster encoding)
+const CELL_HEIGHT_PT = 100 // Excel row height in points
+const CELL_WIDTH_CH = 18   // Excel column width in characters
+const BATCH_SIZE = 20      // images fetched in parallel per batch (increased from 8)
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+interface ImageResult {
+  base64: string | null
+  width: number
+  height: number
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Normalizes an image URL handling protocol-relative (//...) and site-relative (/...) paths.
- */
+/** Normalizes an image URL handling protocol-relative and site-relative paths. */
 function normalizeImageUrl(url: string, pageOrigin?: string): string {
   if (!url) return ''
   let cleaned = url.trim()
@@ -22,154 +27,89 @@ function normalizeImageUrl(url: string, pageOrigin?: string): string {
     try {
       cleaned = new URL(cleaned, pageOrigin).href
     } catch {
-      // Keep cleaned as is if URL constructor fails
+      // Keep cleaned as is
     }
   }
   return cleaned
 }
 
-/**
- * Converts a Blob to a resized JPEG base64 string using an HTMLImageElement.
- */
-function convertBlobViaImageElement(
-  blob: Blob,
-  thumbSize: number
-): Promise<{ base64: string | null; width: number; height: number }> {
-  return new Promise((resolve) => {
-    const img = new Image()
-    const blobUrl = URL.createObjectURL(blob)
-
-    img.onload = () => {
-      const srcW = img.naturalWidth || thumbSize
-      const srcH = img.naturalHeight || thumbSize
-      const scale = Math.min(thumbSize / srcW, thumbSize / srcH, 1)
-      const dstW = Math.max(1, Math.round(srcW * scale))
-      const dstH = Math.max(1, Math.round(srcH * scale))
-
-      const canvas = document.createElement('canvas')
-      canvas.width = dstW
-      canvas.height = dstH
-      const ctx = canvas.getContext('2d')
-
-      if (!ctx) {
-        URL.revokeObjectURL(blobUrl)
-        resolve({ base64: null, width: thumbSize, height: thumbSize })
-        return
-      }
-
-      ctx.drawImage(img, 0, 0, dstW, dstH)
-      URL.revokeObjectURL(blobUrl)
-
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
-      const base64 = dataUrl.split(',')[1] ?? null
-      resolve({ base64, width: dstW, height: dstH })
-    }
-
-    img.onerror = () => {
-      URL.revokeObjectURL(blobUrl)
-      resolve({ base64: null, width: thumbSize, height: thumbSize })
-    }
-
-    img.src = blobUrl
-  })
-}
+/** In-memory cache to avoid re-fetching the same image URL. */
+const imageCache = new Map<string, ImageResult>()
 
 /**
  * Fetch and convert an image URL to a resized JPEG base64 string.
- * Strategy 1: Sidepanel direct fetch (bypasses CORS via host_permissions).
- * Strategy 2: Content script message fallback (if page DOM or cookies needed).
+ * Uses createImageBitmap for fast off-thread decoding (no HTMLImageElement needed).
+ * Results are cached so duplicate URLs across rows are instant.
  */
 async function fetchImageBase64(
   imgUrl: string,
-  tabId?: number,
   thumbSize = THUMB_PX
-): Promise<{ base64: string | null; width: number; height: number }> {
+): Promise<ImageResult> {
   const normalizedUrl = normalizeImageUrl(imgUrl)
   if (!normalizedUrl || (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://'))) {
     return { base64: null, width: thumbSize, height: thumbSize }
   }
 
-  // Strategy 1: Direct fetch in sidepanel context (bypasses CORS with host_permissions)
+  // Return cached result if available
+  const cached = imageCache.get(normalizedUrl)
+  if (cached) return cached
+
   try {
     const resp = await fetch(normalizedUrl)
-    if (resp.ok) {
-      const blob = await resp.blob()
-      
-      try {
-        const imgBitmap = await createImageBitmap(blob)
-        const srcW = imgBitmap.width || thumbSize
-        const srcH = imgBitmap.height || thumbSize
-        const scale = Math.min(thumbSize / srcW, thumbSize / srcH, 1)
-        const dstW = Math.max(1, Math.round(srcW * scale))
-        const dstH = Math.max(1, Math.round(srcH * scale))
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
 
-        const canvas = document.createElement('canvas')
-        canvas.width = dstW
-        canvas.height = dstH
-        const ctx = canvas.getContext('2d')
+    const blob = await resp.blob()
+    const imgBitmap = await createImageBitmap(blob)
 
-        if (ctx) {
-          ctx.drawImage(imgBitmap, 0, 0, dstW, dstH)
-          imgBitmap.close()
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.88)
-          const base64 = dataUrl.split(',')[1] ?? null
-          if (base64) {
-            return { base64, width: dstW, height: dstH }
-          }
-        } else {
-          imgBitmap.close()
-        }
-      } catch {
-        const res = await convertBlobViaImageElement(blob, thumbSize)
-        if (res.base64) return res
-      }
+    const srcW = imgBitmap.width || thumbSize
+    const srcH = imgBitmap.height || thumbSize
+    const scale = Math.min(thumbSize / srcW, thumbSize / srcH, 1)
+    const dstW = Math.max(1, Math.round(srcW * scale))
+    const dstH = Math.max(1, Math.round(srcH * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = dstW
+    canvas.height = dstH
+    const ctx = canvas.getContext('2d')
+
+    if (!ctx) {
+      imgBitmap.close()
+      const result: ImageResult = { base64: null, width: thumbSize, height: thumbSize }
+      imageCache.set(normalizedUrl, result)
+      return result
     }
-  } catch (err) {
-    console.warn('[EcomScraper] Sidepanel fetch failed, trying content script fallback:', normalizedUrl, err)
-  }
 
-  // Strategy 2: Content script fallback
-  if (tabId) {
-    try {
-      const resp = await chrome.tabs.sendMessage(tabId, {
-        type: 'FETCH_IMAGE_BASE64',
-        payload: { url: normalizedUrl, thumbSize },
-      }) as { payload?: { base64?: string | null; width?: number; height?: number } }
-      
-      const p = resp?.payload
-      if (p?.base64) {
-        return {
-          base64: p.base64,
-          width: p.width ?? thumbSize,
-          height: p.height ?? thumbSize,
-        }
-      }
-    } catch {
-      // Content script fallback failed
-    }
-  }
+    ctx.drawImage(imgBitmap, 0, 0, dstW, dstH)
+    imgBitmap.close()
 
-  return { base64: null, width: thumbSize, height: thumbSize }
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.75) // Lower quality = faster + smaller
+    const base64 = dataUrl.split(',')[1] ?? null
+    const result: ImageResult = { base64, width: dstW, height: dstH }
+    imageCache.set(normalizedUrl, result)
+    return result
+  } catch {
+    const result: ImageResult = { base64: null, width: thumbSize, height: thumbSize }
+    imageCache.set(normalizedUrl, result)
+    return result
+  }
 }
 
 /**
  * Embeds image thumbnails into ExcelJS Worksheet.
+ * Uses large parallel batches and caching for speed.
  */
-async function embedImagesInExcelJSWorksheet(
+async function embedImagesInWorksheet(
   workbook: ExcelJS.Workbook,
   worksheet: ExcelJS.Worksheet,
   rows: ScrapedRow[],
   imageColumn: string,
-  columns: string[]
+  columns: string[],
+  pageOrigin?: string
 ) {
   const imgColIdx = columns.indexOf(imageColumn) // 0-based
   if (imgColIdx < 0) return
 
   worksheet.getColumn(imgColIdx + 1).width = CELL_WIDTH_CH
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-  const tabId = tab?.id
-  const pageOrigin = tab?.url ? new URL(tab.url).origin : undefined
 
   const imageItems = rows.map((row, i) => ({
     rowIndex: i,
@@ -177,11 +117,15 @@ async function embedImagesInExcelJSWorksheet(
     url: normalizeImageUrl(String(row[imageColumn] ?? ''), pageOrigin),
   })).filter(item => item.url.startsWith('http://') || item.url.startsWith('https://'))
 
+  // Process in large parallel batches
   for (let b = 0; b < imageItems.length; b += BATCH_SIZE) {
     const batch = imageItems.slice(b, b + BATCH_SIZE)
 
     const results = await Promise.allSettled(
-      batch.map(item => fetchImageBase64(item.url, tabId, THUMB_PX).then(r => ({ ...item, ...r })))
+      batch.map(async (item) => {
+        const r = await fetchImageBase64(item.url, THUMB_PX)
+        return { ...item, ...r }
+      })
     )
 
     for (const result of results) {
@@ -192,26 +136,19 @@ async function embedImagesInExcelJSWorksheet(
       cell.value = ''
 
       if (!base64) {
-        cell.value = { text: '🔗 View Image', hyperlink: url }
-        cell.font = { color: { argb: 'FF3B82F6' }, underline: true }
+        cell.value = { text: '🔗 View', hyperlink: url }
+        cell.font = { color: { argb: 'FF3B82F6' }, underline: true, size: 9 }
         cell.alignment = { vertical: 'middle', horizontal: 'center' }
         continue
       }
 
       const imageId = workbook.addImage({ base64, extension: 'jpeg' })
-
-      const paddingFrac = 0.06
-      const scaledW = width
-      const scaledH = height
-
       worksheet.addImage(imageId, {
-        tl: { col: imgColIdx + paddingFrac, row: excelRow - 1 + paddingFrac },
-        ext: { width: scaledW, height: scaledH },
+        tl: { col: imgColIdx + 0.05, row: excelRow - 1 + 0.05 },
+        ext: { width, height },
         editAs: 'oneCell',
       })
     }
-
-    await new Promise(r => setTimeout(r, 40))
   }
 }
 
@@ -253,18 +190,41 @@ export function useExport() {
     const filename = options.filename ?? 'ecomscraper-export'
     const embedImages = options.embedImagesInXlsx ?? true
 
-    const workbook = new ExcelJS.Workbook()
-    const worksheet = workbook.addWorksheet('Products')
-
     const imageField = fields.find(f => f.type === 'image')
     const imgColLabel = imageField?.label
+
+    // Get page origin for URL normalization
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    const pageOrigin = tab?.url ? new URL(tab.url).origin : undefined
+
+    // Start image pre-fetching immediately (don't wait for workbook setup)
+    let imagePrefetchPromise: Promise<void> | null = null
+    if (embedImages && imgColLabel) {
+      const urls = [...new Set(
+        rows
+          .map(r => normalizeImageUrl(String(r[imgColLabel] ?? ''), pageOrigin))
+          .filter(u => u.startsWith('http://') || u.startsWith('https://'))
+      )]
+      // Pre-warm the cache in parallel while we build the workbook
+      imagePrefetchPromise = (async () => {
+        for (let b = 0; b < urls.length; b += BATCH_SIZE) {
+          const batch = urls.slice(b, b + BATCH_SIZE)
+          await Promise.allSettled(batch.map(u => fetchImageBase64(u, THUMB_PX)))
+        }
+      })()
+    }
+
+    // Build workbook structure while images are downloading
+    const workbook = new ExcelJS.Workbook()
+    const worksheet = workbook.addWorksheet('Products')
 
     worksheet.columns = columns.map(col => ({
       header: col,
       key: col,
-      width: col === imgColLabel ? CELL_WIDTH_CH : Math.max(col.length + 5, 18),
+      width: col === imgColLabel ? CELL_WIDTH_CH : Math.max(col.length + 4, 16),
     }))
 
+    // Style header row
     const headerRow = worksheet.getRow(1)
     headerRow.height = 22
     headerRow.eachCell(cell => {
@@ -273,17 +233,13 @@ export function useExport() {
       cell.alignment = { vertical: 'middle', horizontal: 'center' }
     })
 
+    // Populate data rows
     rows.forEach((row, i) => {
       const rowData: Record<string, unknown> = {}
       columns.forEach(col => {
-        if (col === imgColLabel) {
-          rowData[col] = ''
-        } else {
-          rowData[col] = row[col] ?? ''
-        }
+        rowData[col] = col === imgColLabel ? '' : (row[col] ?? '')
       })
       const excelRow = worksheet.addRow(rowData)
-
       excelRow.height = imgColLabel ? CELL_HEIGHT_PT : 20
 
       excelRow.eachCell((cell, colNumber) => {
@@ -292,7 +248,7 @@ export function useExport() {
           cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } }
         }
 
-        // Format Naira cost columns as numeric currency in Excel
+        // Format Naira cost columns as numeric currency
         const colHeader = columns[colNumber - 1]
         if (colHeader && /Naira|Carton Cost|Cost per Piece/i.test(colHeader)) {
           const numVal = typeof cell.value === 'number' ? cell.value : parseFloat(String(cell.value).replace(/[^0-9.]/g, ''))
@@ -305,6 +261,7 @@ export function useExport() {
       })
     })
 
+    // Auto-fit column widths (skip image column)
     worksheet.columns.forEach((column) => {
       if (column.key === imgColLabel) return
       let maxLen = 10
@@ -315,10 +272,15 @@ export function useExport() {
       column.width = Math.min(Math.max(maxLen + 2, 12), 55)
     })
 
+    // Wait for image pre-fetch to complete, then embed
+    if (imagePrefetchPromise) {
+      await imagePrefetchPromise
+    }
     if (embedImages && imageField) {
-      await embedImagesInExcelJSWorksheet(workbook, worksheet, rows, imageField.label, columns)
+      await embedImagesInWorksheet(workbook, worksheet, rows, imageField.label, columns, pageOrigin)
     }
 
+    // Write buffer and trigger download
     const buffer = await workbook.xlsx.writeBuffer()
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
     const url = URL.createObjectURL(blob)
@@ -347,12 +309,17 @@ export function useExport() {
       }))
       .filter(item => item.url.startsWith('http://') || item.url.startsWith('https://'))
 
-    for (const item of items) {
-      await chrome.downloads.download({
-        url: item.url,
-        filename: `${folderName}/${item.name}.jpg`,
-      })
-      await new Promise(r => setTimeout(r, 200))
+    // Download images in parallel batches instead of one-by-one
+    for (let b = 0; b < items.length; b += BATCH_SIZE) {
+      const batch = items.slice(b, b + BATCH_SIZE)
+      await Promise.allSettled(
+        batch.map(item =>
+          chrome.downloads.download({
+            url: item.url,
+            filename: `${folderName}/${item.name}.jpg`,
+          })
+        )
+      )
     }
 
     return items.length

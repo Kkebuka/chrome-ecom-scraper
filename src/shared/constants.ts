@@ -103,8 +103,8 @@ export const DEFAULT_LANDED_COST_CONFIG = {
   freightUSD: 5000,
   dollarRate: 1500,
   isUnitPrice: true,
-  defaultCBM: 0.1,
-  defaultQtyPerCarton: 1,
+  defaultCBM: 0.18,
+  defaultQtyPerCarton: 120,
 } as const
 
 // ─── Extension ────────────────────────────────────────────────────────────────
